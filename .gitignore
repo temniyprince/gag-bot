@@ -1,0 +1,47 @@
+# === Environment / secrets ===
+.env
+.env.*
+!.env.example
+
+# === SQLite database ===
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# === IDE / OS ===
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === Claude Code (local agent settings) ===
+.claude/
+
+# === Logs ===
+*.log
+logs/
