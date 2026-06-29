@@ -1,11 +1,4 @@
-﻿# Telegram bot framework (aiogram 3.x)
-aiogram>=3.29.0,<4.0.0
-
-# Loading secrets from .env
+﻿aiogram>=3.29.0,<4.0.0
 python-dotenv>=1.0.0
-
-# Async SQLite driver
 aiosqlite>=0.20.0
-a i o h t t p 
- 
- 
+aiohttp>=3.9.0
