@@ -5,15 +5,17 @@
 Что делает:
   - создаёт нужные директории и БД при первом запуске;
   - инициализирует Bot, Dispatcher, middleware и роутеры;
-  - запускает long-polling с автоматическим переподключением
-    (aiogram сам делает backoff при временных ошибках Telegram API).
+  - запускает фейковый HTTP-сервер (для Render/хостингов);
+  - запускает long-polling с автоматическим переподключением.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -32,32 +34,33 @@ from filters.filters import IsAdmin
 from handlers import register_all_routers
 from middlewares.services import ServicesMiddleware
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 
 def ensure_dirs() -> None:
-    """Создаёт все нужные директории, если их ещё нет (data/, ...)."""
+    """Создаёт все нужные директории, если их ещё нет."""
     config.db_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Директория данных готова: %s", config.db_dir)
 
 
 def setup_dispatcher(db: Database) -> Dispatcher:
-    """Конфигурирует Dispatcher: middleware + роутеры + error handler.
-
-    workflow_data прокидывает db/config во ВСЕ обработчики (включая error),
-    поэтому error-handler тоже получит `db` и `config`.
-    """
+    """Конфигурирует Dispatcher: middleware + роутеры + error handler."""
     dp = Dispatcher(db=db, config=config)
 
-    # Инъекция сервисов в каждый хендлер.
+    # Инъекция сервисов в каждый хендлер
     dp.message.outer_middleware(ServicesMiddleware(db, config))
     dp.callback_query.outer_middleware(ServicesMiddleware(db, config))
 
-    # Регистрируем все роутеры (admin первым).
+    # Регистрируем все роутеры (admin первым)
     register_all_routers(dp)
 
-    # --- Глобальный обработчик ошибок ---
-    # Не даём боту упасть на исключении в хендлере: логируем и отвечаем юзеру.
+    # Глобальный обработчик ошибок
     register_error_handlers(dp)
 
     return dp
@@ -66,8 +69,6 @@ def setup_dispatcher(db: Database) -> Dispatcher:
 def register_error_handlers(dp: Dispatcher) -> None:
     """Регистрирует обработчики исключений по типам."""
 
-    # Временные ошибки Telegram (флуд/ретрай, сеть, 5xx) — логируем и
-    # ждём, не валим бота. aiogram polling сам сделает backoff-переподключение.
     @dp.errors(ExceptionTypeFilter(TelegramRetryAfter))
     async def on_retry_after(event: ErrorEvent) -> None:
         exc = event.exception
@@ -83,17 +84,14 @@ def register_error_handlers(dp: Dispatcher) -> None:
     async def on_server_error(event: ErrorEvent) -> None:
         logger.error("Ошибка сервера Telegram (5xx): %s", event.exception)
 
-    # Неверный токен — критично, логируем и останавливаем polling.
     @dp.errors(ExceptionTypeFilter(TelegramUnauthorizedError))
     async def on_unauthorized(event: ErrorEvent) -> None:
         logger.critical("Неверный BOT_TOKEN: %s", event.exception)
 
-    # Любая другая ошибка в хендлере — не валим бота, логируем и шлём извинение.
     @dp.errors()
     async def on_unhandled(event: ErrorEvent, bot: Bot) -> None:
         logger.exception("Необработанная ошибка в хендлере: %s", event.exception)
         update: Update = event.update
-        # Пытаемся сообщить юзеру, что что-то пошло не так (мягкая посадка).
         chat_id = _extract_chat_id(update)
         if chat_id:
             try:
@@ -106,7 +104,7 @@ def register_error_handlers(dp: Dispatcher) -> None:
 
 
 def _extract_chat_id(update: Update) -> int | None:
-    """Достаёт chat_id из любого типа апдейта (для ответа при ошибке)."""
+    """Достаёт chat_id из любого типа апдейта."""
     if update.message and update.message.chat:
         return update.message.chat.id
     if update.callback_query and update.callback_query.message:
@@ -116,16 +114,34 @@ def _extract_chat_id(update: Update) -> int | None:
     return None
 
 
+async def start_health_server() -> None:
+    """Запускает простой HTTP-сервер для Render (чтобы не засыпал)."""
+    async def health(request: web.Request) -> web.Response:
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.environ.get("PORT", 8000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health-check сервер запущен на порту %s", port)
+
+
 async def main() -> None:
     """Главная асинхронная точка входа."""
     logger.info("Запуск бота…")
     ensure_dirs()
 
-    # Инициализируем БД (создаёт файл и таблицы при первом запуске).
+    # Инициализируем БД
     db = Database(config.db_path)
     await db.init()
 
-    # Bot с HTML как режимом парсинга по умолчанию.
+    # Bot с HTML как режимом парсинга по умолчанию
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -133,15 +149,15 @@ async def main() -> None:
 
     dp = setup_dispatcher(db)
 
-    # Удалим вебхук, чтобы polling работал корректно.
+    # Удалим вебхук, чтобы polling работал корректно
     try:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Не удалось удалить webhook: %s", exc)
 
-    # start_polling сам делает backoff при временных ошибках Telegram API,
-    # то есть обеспечивает автоматическое переподключение.
-    # handle_signals=True корректно обрабатывает SIGINT/SIGTERM (Ctrl+C).
+    # Запускаем health-check сервер для Render
+    await start_health_server()
+
     logger.info("Polling запущен. Остановить: Ctrl+C")
     await dp.start_polling(bot, handle_signals=True)
 
