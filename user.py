@@ -1,18 +1,18 @@
 """Хендлеры для обычных пользователей: /start, игра, проверка подписки.
- 
+
 Логика:
   1. /start — создаём пользователя с бесплатными попытками (один раз).
   2. «Использовать попытку» — roll(25%); выигрыш → ссылка(и), проигрыш → кнопка подписки.
   3. «Проверить подписку» — getChatMember; подписан и бонус не выдан → +1 попытка.
 """
 from __future__ import annotations
- 
+
 import logging
- 
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
- 
+
 from config import Config
 from database import Database
 from keyboards.user import (
@@ -35,12 +35,12 @@ from utils.messages import (
     START_TEXT,
     WIN_TEXT,
 )
- 
+
 logger = logging.getLogger(__name__)
- 
+
 router = Router(name="user")
- 
- 
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, db: Database, config: Config) -> None:
     """Обработка /start. Создаёт пользователя, если его ещё нет."""
@@ -51,7 +51,7 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
     if user is None:
         user = await db.create_user(user_id, config.free_attempts)
         logger.info("Новый пользователь: %s (попыток: %d)", user_id, user.attempts)
- 
+
     if user.attempts > 0:
         await message.answer(
             START_TEXT.format(name=message.from_user.first_name or "друг"),
@@ -60,8 +60,8 @@ async def cmd_start(message: Message, db: Database, config: Config) -> None:
         )
     else:
         await message.answer(NO_ATTEMPTS_TEXT, reply_markup=check_sub_keyboard(config.channel_link))
- 
- 
+
+
 @router.callback_query(PlayCallback.filter())
 async def cb_play(
     callback: CallbackQuery,
@@ -77,7 +77,7 @@ async def cb_play(
     user = await db.get_user(user_id)
     if user is None:
         user = await db.create_user(user_id, config.free_attempts)
- 
+
     if user.attempts <= 0:
         await callback.message.edit_text(
             OUT_OF_ATTEMPTS_TEXT,
@@ -85,9 +85,9 @@ async def cb_play(
         )
         await callback.answer()
         return
- 
+
     await db.decrement_attempts(user_id)
- 
+
     if roll(config.win_chance):
         # Выигрыш: выдаём ВСЕ ссылки на сервера (если один полон — пробуют другой).
         settings = SettingsService(db, config)
@@ -108,10 +108,10 @@ async def cb_play(
             LOSE_TEXT, reply_markup=check_sub_keyboard(config.channel_link)
         )
         logger.info("Пользователь %s проиграл", user_id)
- 
+
     await callback.answer()
- 
- 
+
+
 @router.callback_query(CheckSubCallback.filter())
 async def cb_check_sub(
     callback: CallbackQuery,
@@ -121,7 +121,7 @@ async def cb_check_sub(
     bot: Bot,
 ) -> None:
     """Обработка нажатия «Проверить подписку».
- 
+
     Проверяем getChatMember; если подписан и бонус ещё не выдавался — даём +1.
     """
     if callback.from_user is None:
@@ -130,16 +130,16 @@ async def cb_check_sub(
     user = await db.get_user(user_id)
     if user is None:
         user = await db.create_user(user_id, config.free_attempts)
- 
+
     subscribed = await is_subscribed(bot, config.channel_id, user_id)
     if not subscribed:
         await callback.answer(NOT_SUBSCRIBED_TEXT, show_alert=True)
         return
- 
+
     if user.bonus_received:
         await callback.answer(BONUS_ALREADY_TEXT, show_alert=True)
         return
- 
+
     await db.add_attempt(user_id)
     logger.info("Пользователю %s выдана бонусная попытка за подписку", user_id)
     await callback.message.edit_text(
